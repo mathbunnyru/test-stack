@@ -1,0 +1,87 @@
+name: Build, test, and publish Docker Image
+
+env:
+  OWNER: ${{ github.repository_owner }}
+  IMAGE_NAME: ${{ github.event.repository.name }}
+
+# For more details on events that trigger workflows see:
+# https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows
+on:
+  schedule:
+    # Weekly, at 07:00 on Monday UTC time
+    - cron: "0 7 * * 1"
+  pull_request:
+    paths:
+      - ".github/workflows/docker.yml"
+      - "image/**"
+      - "tests/**"
+      - "requirements-dev.txt"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/docker.yml"
+      - "image/**"
+      - "tests/**"
+      - "requirements-dev.txt"
+  workflow_dispatch:
+
+# https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
+concurrency:
+  # only cancel in-progress jobs or runs for the current workflow - matches against branch & tags
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-publish-image:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repo ⚡️
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set Up Python 🐍
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.12
+
+      - name: Install Dev Dependencies 📦
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade -r requirements-dev.txt
+
+      - name: Get commit sha, this will be used as a tag later on 🏷
+        shell: bash
+        run: |
+          echo "sha12=$(echo ${GITHUB_SHA} | cut -c1-12)" >> $GITHUB_OUTPUT
+        id: get_sha
+
+      - name: Build image 🛠
+        run: >
+          docker build
+          --rm --force-rm
+          --tag ${{ env.OWNER }}/${{ env.IMAGE_NAME }}
+          --tag ${{ env.OWNER }}/${{ env.IMAGE_NAME }}:${{steps.get_sha.outputs.sha12}}
+          image/
+        env:
+          DOCKER_BUILDKIT: 1
+          # Full logs for CI build
+          BUILDKIT_PROGRESS: plain
+
+      - name: Run tests ✅
+        run: python3 -m pytest tests
+        env:
+          TEST_IMAGE: "mathbunnyru/test-stack"
+
+      - name: Login to Docker Hub 🔐
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          username: ${{ env.OWNER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push Image to Docker Hub 📤
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
+        run: docker push --all-tags ${{ env.OWNER }}/${{ env.IMAGE_NAME }}
